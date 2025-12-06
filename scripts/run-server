@@ -1,5 +1,26 @@
 #!/bin/bash
 
+cleanupIptables() {
+    echo "--- Cleaning up iptables rules ---"
+    
+    if [[ $ALLOW_INTERNET == "true" ]]; then
+        # Use -D to delete the exact rule
+        iptables -t nat -D POSTROUTING -s $SUBNET_CIDR -o eth0 -j MASQUERADE
+    fi
+
+    iptables -D INPUT -i tun0 -j ACCEPT
+    iptables -D FORWARD -i eth0 -o tun0 -j ACCEPT
+    iptables -D FORWARD -i tun0 -o eth0 -j ACCEPT
+    iptables -D INPUT -i eth0 -p udp --dport $PORT -j ACCEPT
+    
+    echo "--- iptables cleanup complete ---"
+}
+
+# This ensures the function runs when the script exits, even if stopped by Docker
+trap cleanupIptables EXIT TERM INT
+
+echo "--- Adding iptables rules ---"
+
 if [[ $ALLOW_INTERNET == "true" ]]; then
     iptables -t nat -I POSTROUTING 1 -s $SUBNET_CIDR -o eth0 -j MASQUERADE
 fi
@@ -9,9 +30,18 @@ iptables -I FORWARD 1 -i eth0 -o tun0 -j ACCEPT
 iptables -I FORWARD 1 -i tun0 -o eth0 -j ACCEPT
 iptables -I INPUT 1 -i eth0 -p udp --dport $PORT -j ACCEPT
 
-# Run OpenVPN
-exec openvpn \
+echo "--- Rules added. Starting OpenVPN ---"
+
+# Run OpenVPN in the background
+openvpn \
     --status /run/openvpn/status.log 10 \
     --cd /etc/openvpn \
     --config "/etc/openvpn/server.conf" \
-    --writepid /run/openvpn/openvpn.pid
+    --writepid /run/openvpn/openvpn.pid &
+
+OPEN_VPN_PID=$!
+
+# Wait for the OpenVPN process to exit (it's in the background now)
+# When the container is stopped (e.g., `docker stop`), 
+# a signal (TERM, then KILL) is sent. The trap handles TERM/INT.
+wait $OPEN_VPN_PID
